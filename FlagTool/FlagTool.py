@@ -1,4 +1,4 @@
-import configparser, tkinter as tk
+import configparser, re, tkinter as tk
 from tkinter import ttk, messagebox
 
 hex_to_int = lambda h: int(h, 16)
@@ -94,18 +94,49 @@ class ConfigLoader:
         c = cls.parse_class_flags(parser)
         p = cls.parse_section_flags(parser, "ItemPlus")
         m = cls.parse_section_flags(parser, "mission")
-        return r, e, c, p, m
+        msf = cls.parse_section_flags(parser, "MonsterSpecialFlag")
+        return r, e, c, p, m, msf
 
 C = ConfigLoader.load_colors()
 _FONTS = ConfigLoader.load_fonts()
 D = ConfigLoader.load_interface_dimensions()
-R, E, CLS, P, M = ConfigLoader.load_flags()
+R, E, CLS, P, M, MSF = ConfigLoader.load_flags()
+DECIMAL_TAB_KEYS = {"itens", "ItemPlus", "enchants", "mission", "monsterSpecialFlag"}
+TAB_DEFINITIONS = [
+    ("Item", "itens"),
+    ("ItemPlus", "ItemPlus"),
+    ("Class", "classes"),
+    ("Enchant", "enchants"),
+    ("Mission", "mission"),
+    ("Monster SpecialFlag", "monsterSpecialFlag"),
+]
+STATUS_BUTTON_TEXTS = ("Check", "Copy", "Mark All", "Clear All")
 
 def get_font_config(section, modifier=""):
     s = section if section in _FONTS else "default"
     name = _FONTS[s]["name"]
     size = _FONTS[s]["size"]
     return (name, size, modifier) if modifier else (name, size)
+
+def format_display_text(text):
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    return re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+
+def get_cell_font_config(text, is_bold=False):
+    text = format_display_text(text)
+    name, size = get_font_config("cell")
+    if len(text) > 24:
+        size -= 1
+    if len(text) > 34:
+        size -= 1
+    modifier = "bold" if is_bold else ""
+    return (name, max(size, 8), modifier) if modifier else (name, max(size, 8))
+
+BUTTON_WIDTH = max(
+    D.get("button_width", 80) // 7,
+    *(len(format_display_text(text)) + 2 for text, _ in TAB_DEFINITIONS),
+    *(len(format_display_text(text)) + 2 for text in STATUS_BUTTON_TEXTS)
+)
 
 class BaseTab(tk.Frame):
     def __init__(self, parent, callback):
@@ -126,12 +157,16 @@ class BaseTab(tk.Frame):
             label.config(bg=C["frame_normal"], fg=C["text"])
 
     def create_cell(self, parent, text, value, is_bold=False):
+        display_text = format_display_text(text)
         frame = tk.Frame(parent, bg=C["frame_normal"], highlightbackground=C["border"],
                      highlightthickness=D.get("cell_border", 1), cursor="hand2",
                      width=D.get("cell_width", 140), height=D.get("cell_height", 36))
         frame.pack_propagate(False)
-        font_config = get_font_config("cell", "bold") if is_bold else get_font_config("cell")
-        label = tk.Label(frame, text=text, font=font_config, fg=C["text"], bg=C["frame_normal"], anchor="center")
+        label = tk.Label(
+            frame, text=display_text, font=get_cell_font_config(text, is_bold), fg=C["text"],
+            bg=C["frame_normal"], anchor="center", justify="center",
+            wraplength=max(40, D.get("cell_width", 150) - (D.get("cell_padx", 6) * 2))
+        )
         label.pack(expand=True, fill=tk.BOTH, padx=D.get("cell_padx", 6), pady=D.get("cell_pady", 6))
 
         for widget in [frame, label]:
@@ -178,13 +213,14 @@ class BaseTab(tk.Frame):
         d = conversion_func(input_value)
         
         matched_flags = [v for v in self.cells if (d & v) == v and v != 0]
+        should_select_zero = d == 0 and 0 in self.cells
 
         if not matched_flags and d != 0:
             messagebox.showinfo("Info", "No flag matches.")
 
         self.selected_values.clear()
         for v in self.cells:
-            is_match = (d & v) == v and v != 0
+            is_match = ((d & v) == v and v != 0) or (should_select_zero and v == 0)
             if is_match:
                 self.selected_values.add(v)
             self._update_cell_visual_state(v, is_match)
@@ -277,27 +313,34 @@ class Application(tk.Tk):
             "ItemPlus": DecimalFlagsTab(self.content_frame, self.update_result_display, P),
             "classes": ClassFlagsTab(self.content_frame, self.update_result_display),
             "enchants": DecimalFlagsTab(self.content_frame, self.update_result_display, E),
-            "mission": DecimalFlagsTab(self.content_frame, self.update_result_display, M)
+            "mission": DecimalFlagsTab(self.content_frame, self.update_result_display, M),
+            "monsterSpecialFlag": DecimalFlagsTab(self.content_frame, self.update_result_display, MSF)
         }
         self._create_statusbar()
         self.tabs[self.current_tab_key].pack(fill="both", expand=True)
         self.switch_tab(self.current_tab_key)
 
     def _create_styled_button(self, parent, text, command, side, padx_val, is_tab_button=False):
+        display_text = format_display_text(text)
         btn_config = {
             "font": get_font_config("tab", "bold") if is_tab_button else get_font_config("button", "bold"),
             "bg": C["button"], "fg": C["button_text"],
             "activebackground": C["button_active"], "activeforeground": C["button_active_text"],
             "relief": "flat", "bd": 0, "cursor": "hand2",
-            "pady": D.get("button_pady", 6)
+            "pady": D.get("button_pady", 6),
+            "highlightthickness": 1, "highlightbackground": C["border"]
         }
-        if is_tab_button:
-            btn_config["width"] = D.get("button_width", 80) // 7
-        else:
-            btn_config["width"] = D.get("button_width", 80) // 7
+        btn_config["width"] = BUTTON_WIDTH
         
-        btn = tk.Button(parent, text=text, command=command, **btn_config)
+        btn = tk.Button(parent, text=display_text, command=command, **btn_config)
         btn.pack(side=side, padx=padx_val)
+        if not is_tab_button:
+            btn.bind("<Enter>", lambda event, b=btn: b.config(
+                bg=C["button_active"], fg=C["button_active_text"], highlightbackground=C["highlight"]
+            ))
+            btn.bind("<Leave>", lambda event, b=btn: b.config(
+                bg=C["button"], fg=C["button_text"], highlightbackground=C["border"]
+            ))
         return btn
 
     def _create_toolbar(self):
@@ -310,8 +353,7 @@ class Application(tk.Tk):
         tk.Label(center_frame, font=get_font_config("header", "bold"), fg=C["highlight"], bg=C["header"]).pack(side=tk.LEFT, padx=(0, D.get("label_padx", 6)))
         
         self.tab_buttons = {}
-        tab_definitions = [("Item", "itens"), ("ItemPlus", "ItemPlus"), ("Class", "classes"), ("Enchant", "enchants"), ("Mission", "mission")]
-        for text, key in tab_definitions:
+        for text, key in TAB_DEFINITIONS:
             btn = self._create_styled_button(center_frame, text, lambda k=key: self.switch_tab(k), tk.LEFT, D.get("button_padx", 2), is_tab_button=True)
             self.tab_buttons[key] = btn
 
@@ -327,7 +369,9 @@ class Application(tk.Tk):
         self._create_styled_button(center_frame, "Check", self.check_current_tab_flags, tk.LEFT, button_padding)
         self.result_entry = tk.Entry(
             center_frame, font=get_font_config("entry"), justify="center", width=D.get("entry_width", 18),
-            bg=C["card"], fg=C["text"], insertbackground=C["highlight"], relief="flat", bd=1
+            bg=C["card"], fg=C["text"], insertbackground=C["highlight"], relief="flat", bd=0,
+            highlightthickness=1, highlightbackground=C["border"], highlightcolor=C["highlight"],
+            selectbackground=C["highlight"], selectforeground=C["button_active_text"]
         )
         self.result_entry.pack(side=tk.LEFT, ipady=D.get("button_pady", 6), padx=button_padding)
         self._create_styled_button(center_frame, "Copy", self.copy_result_to_clipboard, tk.LEFT, button_padding)
@@ -337,7 +381,7 @@ class Application(tk.Tk):
     def update_result_display(self, total):
         self.result_entry.delete(0, tk.END)
         if total != 0:
-            formatted_value = str(total) if self.current_tab_key in ["itens", "ItemPlus", "enchants", "mission"] else int_to_hex(total)
+            formatted_value = str(total) if self.current_tab_key in DECIMAL_TAB_KEYS else int_to_hex(total)
             self.result_entry.insert(0, formatted_value)
 
     def check_current_tab_flags(self):
@@ -345,7 +389,7 @@ class Application(tk.Tk):
 
     def copy_result_to_clipboard(self):
         current_tab = self.tabs[self.current_tab_key]
-        value_to_copy = str(current_tab.total_value) if self.current_tab_key in ["itens", "ItemPlus", "enchants", "mission"] else int_to_hex(current_tab.total_value)
+        value_to_copy = str(current_tab.total_value) if self.current_tab_key in DECIMAL_TAB_KEYS else int_to_hex(current_tab.total_value)
         self.clipboard_clear()
         self.clipboard_append(value_to_copy)
         messagebox.showinfo("Success", f"Value {value_to_copy} copied!")
@@ -363,7 +407,8 @@ class Application(tk.Tk):
         self.current_tab_key = key
         for tab_key, button in self.tab_buttons.items():
             button.config(bg=C["button_active"] if tab_key == key else C["button"],
-                       fg=C["button_active_text"] if tab_key == key else C["button_text"])
+                       fg=C["button_active_text"] if tab_key == key else C["button_text"],
+                       highlightbackground=C["highlight"] if tab_key == key else C["border"])
         self.update_result_display(self.tabs[key].total_value)
 
 if __name__ == "__main__":
